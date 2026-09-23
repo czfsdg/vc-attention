@@ -2,6 +2,7 @@
 
 These do not replace running the actual third-party kernels on Hopper.
 """
+from dataclasses import asdict, replace
 import importlib.util
 from pathlib import Path
 import sys
@@ -168,3 +169,65 @@ def test_explicit_subset_uses_selected_baseline():
     assert args.backends == ["sage", "vc"]
     with pytest.raises(SystemExit):
         benchmark.parse_args(["--backends", "sage", "--baseline", "flash3"])
+
+
+@pytest.mark.parametrize("smooth,cast", [(False, False), (False, True), (True, False), (True, True)])
+def test_reference_check_preserves_full_q_and_config_and_exposes_native_error(smooth, cast):
+    from vc_attention import Config, attention
+
+    generator = torch.Generator().manual_seed(41)
+    q, k, v = (torch.randn(1, 2, n, 8, generator=generator) for n in (33, 67, 67))
+    # This unsampled row controls the Q scale for the first block. A reference
+    # that slices Q before attention will silently use different quantization.
+    q[:, :, 1, :] *= 64
+    indices = [0, 32]
+    cfg = Config(backend="cuda_fp8", q_block=32, kv_block=32, k_quant_block=64,
+                 clusters=3, iterations=3, mean_dtype="bfloat16", v_smooth=smooth, expcast=cast)
+    reference_cfg = replace(cfg, backend="reference")
+    reference, _ = attention(q, k, v, reference_cfg)
+    sample = reference[:, :, indices, :].float()
+    # Plant an implementation error independently of the quantization error.
+    native_sample = sample + 0.125
+    golden = benchmark.fp32_reference(q, k, v, indices, chunk=1)
+    comparison = benchmark.compare_vc_reference((q, k, v), asdict(cfg), native_sample, golden, indices)
+    assert comparison["reference_config"] == asdict(reference_cfg)
+    assert comparison["reference_stats"]["backend"] == "reference"
+    assert comparison["reference_stats"]["expcast"] is cast
+    assert comparison["reference_stats"]["smoothing_active"] is smooth
+    assert comparison["native_vs_reference"]["max_abs_error_vs_reference"] == pytest.approx(0.125, abs=1e-6)
+    expected = (native_sample.double() - sample.double()).norm() / sample.double().norm()
+    assert comparison["native_vs_reference"]["relative_rmse_vs_reference"] == pytest.approx(expected.item())
+    expected_reference_error = (sample.double() - golden.double()).norm() / golden.double().norm()
+    assert comparison["reference_vs_fp32"]["relative_rmse_vs_fp32"] == pytest.approx(expected_reference_error.item())
+    # Same-config agreement is possible even with a nonzero FP32 accuracy error.
+    identical = benchmark.compare_vc_reference((q, k, v), asdict(cfg), sample, golden, indices)
+    assert identical["native_vs_reference"]["relative_rmse_vs_reference"] == 0
+    assert identical["reference_vs_fp32"]["relative_rmse_vs_fp32"] > 0
+
+
+def test_reference_check_requires_a_native_vc_backend():
+    with pytest.raises(SystemExit):
+        benchmark.parse_args(["--backends", "sage", "--vc-reference-check"])
+    args = benchmark.parse_args(["--backends", "vc", "--vc-ablation", "--vc-reference-check", "--check-queries", "0"])
+    assert args.vc_reference_check and args.vc_ablation and args.check_queries == 0
+
+
+@pytest.mark.parametrize("count,scope", [(3, "all"), (2, "sampled")])
+def test_report_identifies_actual_accuracy_scope_and_percent_units(capsys, count, scope):
+    result = dict(version="test", median_ms=1, min_ms=1, max_ms=1, speedup_vs_baseline=1,
+                  relative_rmse_vs_fp32=0.05, max_abs_error_vs_fp32=0.02)
+    report = {
+        "arguments": {"baseline": "vc", "queries": 3},
+        "accuracy": {"query_indices": list(range(count))},
+        "results": {"vc": result}, "vc_speedup_vs": {},
+        "vc_reference_check": {"results": {"vc": {
+            "native_vs_fp32": {"relative_rmse_vs_fp32": 0.05},
+            "reference_vs_fp32": {"relative_rmse_vs_fp32": 0.049},
+            "native_vs_reference": {"relative_rmse_vs_reference": 0.001, "max_abs_error_vs_reference": 0.0002},
+        }}},
+    }
+    benchmark.print_report(report)
+    text = capsys.readouterr().out
+    assert f"{scope} {count}/3 query rows" in text
+    assert "PERCENT" in text and "5.000000" in text and "4.900000" in text and "0.100000" in text
+    assert "no pass/fail threshold" in text

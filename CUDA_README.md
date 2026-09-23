@@ -26,7 +26,7 @@ This adds `Config(backend="cuda_fp8")` to the existing VC-Attention API. It is
   Performance still needs measurement with the benchmark below.
 
 Local checks completed on 2026-09-23: the extension compiled for `sm_90` and
-loaded successfully with CUDA 12.1 / PyTorch 2.3.1 on Windows; 52 CPU/reference,
+loaded successfully with CUDA 12.1 / PyTorch 2.3.1 on Windows; 59 CPU/reference,
 argument-validation, import and benchmark-logic tests passed. The 24 Hopper tests and 2 NPU tests were
 skipped because the local GPU is an RTX 3060. These results do not establish
 Linux build compatibility or H800 runtime correctness. See
@@ -166,7 +166,9 @@ reference error. It measures the complete API call, including internal
 validation, quantization, allocation, and first-step clustering. Input layout
 copies and first-use JIT are outside timing. Different internal numerical
 contracts require reporting speed and error together. See [BENCHMARK.md](BENCHMARK.md)
-for commands, timing/accuracy scope, subsets and VC ablations.
+for commands, timing/accuracy scope, subsets and VC ablations. Add
+`--vc-reference-check --check-queries 0` to compare native outputs with the
+same-config Python quantized reference after timing, using the same full Q/K/V.
 
 ## Next performance work
 

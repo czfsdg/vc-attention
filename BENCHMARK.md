@@ -100,6 +100,44 @@ python3 scripts/benchmark_cuda.py --backends sage vc --baseline sage --output re
 python3 scripts/benchmark_cuda.py --vc-ablation --output results/h200_ablation.json
 ```
 
+## 区分实现差异与量化算法误差
+
+在同一份 Q/K/V 上运行原生 CUDA、同配置的 Python 量化参考、标准 FP32
+Attention，才能判断约 5% 的误差是否也存在于量化算法参考中。
+拉取更新后直接复制下面两行，不需要重新编译：
+
+```bash
+git pull --ff-only
+python3 scripts/benchmark_cuda.py --backends vc --vc-ablation --vc-reference-check --check-queries 0 --output results/h200_vc_reference.json
+```
+
+默认形状仍为 `[1,2,1024,128]`，BF16 输入、固定随机种子 1234；四组消融与上次相同。
+`--vc-reference-check` 会在全部测速结束后，分别运行四组同配置的
+`Config(backend="reference")`。只改 backend，其余分块、量化、ExpCast、V-Smooth、
+聚类及均值精度参数保持一致。参考在同一张 GPU 上运行，FP8 编码/解码后使用
+FP32 矩阵乘，关闭 TF32；它的耗时不进入性能表。
+
+末尾新增的表格以**百分数**显示相对均方根误差：
+
+| 列 | 含义 |
+| --- | --- |
+| `CUDA/FP32 %` | 原生 CUDA 与标准 FP32 Attention 的差异 |
+| `REF/FP32 %` | Python 量化参考与标准 FP32 Attention 的差异 |
+| `CUDA/REF %` | 原生 CUDA 与同配置 Python 量化参考的差异 |
+| `CUDA/REF max abs` | 原生 CUDA 与 Python 量化参考的最大绝对差异 |
+
+例如，前两列都约 5%、第三列远小于 5%，支持主要误差来自当前量化算法的解释。
+若第三列也明显偏大，需要进一步检查原生实现、聚类排列和数值舍入。
+两个实现都会独立执行预处理，因此第三列衡量整个实现的差异，并非仅矩阵乘内核。
+不能通过相减前两列来计算第三列，三者都直接比较对应的输出张量。
+参考接近也不代表模型质量已经达标，这个诊断不设置通用通过阈值。
+
+对拍使用每组最后一轮最后一次原生调用的输出，三种误差对应同一组输出；
+上方性能表的误差仍为各次检查中观察到的最差值，两表可能略有不同。
+对拍始终先处理完整 Q/K/V，再按 `--check-queries` 抽取输出；不能先裁剪 Q，
+否则会改变 Q 的块量化 scale。上述命令检查全部 query。完整诊断保存在 JSON
+的 `vc_reference_check` 字段中，JSON 内的相对误差仍为比例，`0.01` 表示 1%。
+
 接口参考：[FlashAttention 官方文档](https://github.com/Dao-AILab/flash-attention#readme)、
 [FA3 接口源码](https://github.com/Dao-AILab/flash-attention/blob/main/hopper/flash_attn_interface.py)、
 [FA4 接口源码](https://github.com/Dao-AILab/flash-attention/blob/main/flash_attn/cute/interface.py)、

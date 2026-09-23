@@ -4,7 +4,7 @@ All arms receive identical values in their native contiguous layouts. Quantizati
 and other internal preprocessing are timed; layout copies and first-use JIT are not.
 """
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import importlib
 from importlib import metadata
 import json
@@ -149,12 +149,39 @@ def fp32_reference(q, k, v, indices, chunk):
     return torch.cat(rows, dim=2)
 
 
-def error_metrics(sample, golden):
+def error_metrics(sample, golden, reference_name="fp32"):
     delta = sample.double() - golden.double()
     return {
-        "relative_rmse_vs_fp32": (delta.square().mean().sqrt()
-                                  / golden.double().square().mean().sqrt().clamp_min(1e-12)).item(),
-        "max_abs_error_vs_fp32": delta.abs().max().item(),
+        f"relative_rmse_vs_{reference_name}": (delta.square().mean().sqrt()
+                                               / golden.double().square().mean().sqrt().clamp_min(1e-12)).item(),
+        f"max_abs_error_vs_{reference_name}": delta.abs().max().item(),
+    }
+
+
+@torch.no_grad()
+def compare_vc_reference(qkv, native_config, native_sample, golden, indices):
+    """Compare one timed native output with the same quantized Python algorithm.
+
+    Keep ALL query rows until after attention: sampling Q before quantization
+    changes the per-block Q scales. The reference runs on the same device and
+    independently performs preprocessing, including clustering when enabled.
+    """
+    from vc_attention import Config, attention
+
+    reference_config = replace(Config(**native_config), backend="reference")
+    output, stats = attention(*qkv, reference_config)
+    output = output_hnd(output, "BHND", qkv[0].shape, qkv[0].dtype)
+    ids = torch.tensor(indices, device=output.device)
+    reference_sample = output.index_select(2, ids).float().cpu()
+    if native_sample.shape != reference_sample.shape or golden.shape != reference_sample.shape:
+        raise ValueError("native/reference/FP32 samples must have the same shape")
+    return {
+        "reference_config": asdict(reference_config),
+        "reference_device": str(qkv[0].device),
+        "reference_stats": stats,
+        "native_vs_fp32": error_metrics(native_sample, golden),
+        "reference_vs_fp32": error_metrics(reference_sample, golden),
+        "native_vs_reference": error_metrics(native_sample, reference_sample, reference_name="reference"),
     }
 
 
@@ -195,6 +222,7 @@ def parse_args(argv=None):
     parser.add_argument("--check-queries", type=int, default=128, help="evenly spaced rows for accuracy; 0 checks all")
     parser.add_argument("--reference-chunk", type=int, default=32, help="FP32 oracle query rows per chunk")
     parser.add_argument("--vc-ablation", action="store_true", help="also measure VC control/ExpCast-only/V-Smooth-only")
+    parser.add_argument("--vc-reference-check", action="store_true", help="compare VC to the same-config Python quantized reference after timing")
     parser.add_argument("--output", help="save complete JSON report")
     args = parser.parse_args(argv)
     if min(args.batch, args.queries, args.tokens, args.heads, args.warmup,
@@ -204,6 +232,8 @@ def parse_args(argv=None):
         parser.error("--backends must not contain duplicates")
     if args.vc_ablation and "vc" not in args.backends:
         parser.error("--vc-ablation requires vc in --backends")
+    if args.vc_reference_check and "vc" not in args.backends:
+        parser.error("--vc-reference-check requires vc in --backends")
     args.baseline = args.baseline or ("flash3" if "flash3" in args.backends else args.backends[0])
     if args.baseline not in args.backends:
         parser.error("--baseline must be present in --backends")
@@ -255,6 +285,7 @@ def run(args):
         results[backend.name] = {**backend.info, **metrics, "trial_ms": []}
     rng = random.Random(args.seed)
     trial_order = []
+    native_samples = {}
     for trial in range(args.trials):
         order = list(backends)
         rng.shuffle(order)
@@ -265,7 +296,12 @@ def run(args):
                 output, milliseconds = measure_trial(backend.call, args.repeats, device)
                 # Check a timed output outside the measured interval too.
                 normalized = output_hnd(output, backend.layout, qkv[0].shape, dtype)
-                metrics = error_metrics(normalized.index_select(2, ids).float().cpu(), golden)
+                sample = normalized.index_select(2, ids).float().cpu()
+                metrics = error_metrics(sample, golden)
+                if args.vc_reference_check and backend.info.get("config", {}).get("backend") == "cuda_fp8":
+                    # Overwrite per trial; compare the last timed sample, not a
+                    # new native call that might use a different clustering order.
+                    native_samples[backend.name] = sample
                 del output, normalized
             except Exception as exc:
                 raise RuntimeError(f"{backend.name} timed run/validation failed: {exc}") from exc
@@ -275,7 +311,7 @@ def run(args):
     for result in results.values():
         samples = result["trial_ms"]
         result.update(median_ms=statistics.median(samples), min_ms=min(samples), max_ms=max(samples))
-    return {
+    report = {
         "environment": environment, "arguments": vars(args), "results": results,
         "vc_speedup_vs": add_speedups(results, args.baseline), "trial_order": trial_order,
         "accuracy": {"query_indices": indices, "all_keys": True,
@@ -291,6 +327,30 @@ def run(args):
             "speedup_vs_baseline = baseline_ms / row_ms; vc_speedup_vs = other_ms / vc_ms; >1 is faster.",
         ],
     }
+    if args.vc_reference_check:
+        report["vc_reference_check"] = {
+            "scope": "last output of the final timed trial for each VC variant; same Q/K/V and query indices",
+            "reference": "same-device Python reference, FP8 encoding/decoding with FP32 matmuls; TF32 disabled",
+            "preprocessing": "native and reference independently compute clustering and quantization",
+            "full_q_before_sampling": True, "included_in_timing": False,
+            "acceptance_threshold": None, "results": {},
+        }
+        for backend in backends:
+            if backend.name not in native_samples:
+                continue
+            print(f"Python quantized reference: {backend.name} (all Q/K/V; outside timing)", flush=True)
+            try:
+                comparison = compare_vc_reference(
+                    qkv, backend.info["config"], native_samples[backend.name], golden, indices
+                )
+            except Exception as exc:
+                raise RuntimeError(f"{backend.name} Python reference check failed: {exc}") from exc
+            report["vc_reference_check"]["results"][backend.name] = comparison
+        report["notes"].append(
+            "VC reference diagnostics report three pairwise errors for the same final timed output. "
+            "They do not impose a tolerance or establish model quality."
+        )
+    return report
 
 
 def print_report(report):
@@ -304,7 +364,20 @@ def print_report(report):
     print(f"speedup = {baseline} latency / row latency; >1 means this row is faster.")
     for name, speedup in report["vc_speedup_vs"].items():
         print(f"VC speedup vs {name}: {speedup:.4f}x (other_ms / vc_ms; >1 means VC is faster)")
-    print("Latency includes each API's internal preprocessing. Error uses sampled queries and all keys.")
+    count = len(report["accuracy"]["query_indices"])
+    total = report["arguments"]["queries"]
+    scope = "all" if count == total else "sampled"
+    print(f"Latency includes each API's internal preprocessing. Error uses {scope} {count}/{total} query rows and all keys.")
+    if "vc_reference_check" in report:
+        print("\nVC reference check: relative RMSE in PERCENT (last timed output; outside timing)")
+        print(f"{'backend':<14} {'CUDA/FP32 %':>14} {'REF/FP32 %':>14} {'CUDA/REF %':>14} {'CUDA/REF max abs':>18}")
+        for name, row in report["vc_reference_check"]["results"].items():
+            print(f"{name:<14} {100 * row['native_vs_fp32']['relative_rmse_vs_fp32']:14.6f} "
+                  f"{100 * row['reference_vs_fp32']['relative_rmse_vs_fp32']:14.6f} "
+                  f"{100 * row['native_vs_reference']['relative_rmse_vs_reference']:14.6f} "
+                  f"{row['native_vs_reference']['max_abs_error_vs_reference']:18.8f}")
+        print("REF is the Python quantized algorithm; FP32 is standard dense attention.")
+        print("CUDA/REF measures implementation agreement, including independent preprocessing; no pass/fail threshold.")
 
 
 def main():
