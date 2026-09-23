@@ -1,4 +1,4 @@
-# H800 CUDA C++ implementation
+# Hopper (H800/H100/H200) CUDA C++ implementation
 
 This adds `Config(backend="cuda_fp8")` to the existing VC-Attention API. It is
 **VC-Attention (V-Smooth + ExpCast), not the SageAttention K-smoothing recipe**.
@@ -12,6 +12,9 @@ This adds `Config(backend="cuda_fp8")` to the existing VC-Attention API. It is
 - `csrc/kernels.cu` also contains the C++ host tile loops.
 - `csrc/bindings.cpp`: PyTorch allocation/stream integration and a C++/ATen
   implementation of the Lloyd clustering preprocessing.
+  Device queries use the CUDA runtime directly; cuBLASLt handles are cached per
+  host thread/device. This avoids pulling in cuSPARSE/cuSOLVER headers through
+  ATen's general CUDA context header, and avoids destroying handles per call.
 - `cuda_backend.py`: extension loading and the existing request/step layout cache.
   Python does not loop over the Attention tiles. K/V gathers remain PyTorch
   operations on CUDA. Clustering is GPU ATen orchestration, not a fused custom
@@ -28,13 +31,16 @@ argument-validation, and import tests passed. The 24 Hopper tests and 2 NPU test
 skipped because the local GPU is an RTX 3060. These results do not establish
 Linux build compatibility or H800 runtime correctness. See
 `results/cuda_local_validation.json` for the recorded scope.
+The extension also rebuilt with cuSPARSE/cuSOLVER headers deliberately blocked;
+separate compiler probes confirmed the header guards were active. The user's
+CUDA 13 / PyTorch 2.13 / H200 environment still needs a remote rebuild and run.
 
 The backend is named `cuda_backend.py` so running Python from the checkout does
 not shadow NVIDIA's `cuda.bindings` package during PyTorch initialization.
 
 ## Requirements
 
-- Target: Linux, NVIDIA H800/H100 (compute capability 9.x).
+- Target: Linux, NVIDIA H800/H100/H200 (compute capability 9.x).
 - CUDA Toolkit 12.1 or newer with `nvcc` and cuBLASLt. Use a Toolkit compatible
   with the CUDA-enabled PyTorch installed in the target environment.
 - PyTorch >= 2.3, Python >= 3.9, a CUDA-supported C++17 compiler.
@@ -121,7 +127,9 @@ VC_REQUIRE_CUDA=1 python3 -m pytest tests/test_core.py tests/test_adapter.py tes
 ```
 
 Or, after installing build/test dependencies, run `bash scripts/validate_h800.sh`
-to build, preflight, and test. `VC_REQUIRE_CUDA=1` turns a missing Hopper GPU or
+to build, preflight, and test. The script sets `TORCH_CUDA_ARCH_LIST=9.0` even if
+the container exports a broader list; H200 uses the same `sm_90` target.
+`VC_REQUIRE_CUDA=1` turns a missing Hopper GPU or
 extension into an error; a run that skips hardware tests is not accepted.
 
 Tests cover raw ExpCast bytes including rounding boundaries, all four ablation
@@ -153,3 +161,4 @@ WGMMA/TMA scheduling. That implementation is not part of this baseline.
 - [PyTorch CUDAExtension](https://docs.pytorch.org/docs/stable/cpp_extension.html)
 - [CUDA 12.1 cuBLASLt FP8 requirements](https://docs.nvidia.com/cuda/archive/12.1.0/cublas/index.html#cublasltmatmul)
 - [CUDA FP8 conversions](https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__FP8__MISC.html)
+- [NVIDIA GPU compute capabilities](https://developer.nvidia.com/cuda/gpus)

@@ -1,10 +1,13 @@
 #include <torch/extension.h>
-#include <ATen/cuda/CUDAContext.h>
 #include <ATen/ops/argsort.h>
+#include <c10/cuda/CUDAException.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAStream.h>
+#include <algorithm>
 #include <climits>
 #include <cmath>
+#include <memory>
+#include <unordered_map>
 #include <vector>
 
 #include "vc_cuda.h"
@@ -12,17 +15,36 @@
 namespace {
 using at::Tensor;
 
-#ifdef _WIN32
-// PyTorch 2.3 does not expose its cuBLASLt handle on Windows. This path is
-// useful for compile checks; the deployment target is Linux + Hopper.
+// Own only the cuBLASLt resource we use. ATen's CUDAContext.h also includes
+// cuSPARSE/cuSOLVER development headers, which this extension does not need.
 struct LocalLtHandle {
     cublasLtHandle_t value = nullptr;
-    LocalLtHandle() {
+    int device;
+    explicit LocalLtHandle(int device_index) : device(device_index) {
         TORCH_CHECK(cublasLtCreate(&value) == CUBLAS_STATUS_SUCCESS, "cublasLtCreate failed");
     }
-    ~LocalLtHandle() { if (value) cublasLtDestroy(value); }
+    LocalLtHandle(const LocalLtHandle&) = delete;
+    LocalLtHandle& operator=(const LocalLtHandle&) = delete;
+    ~LocalLtHandle() {
+        // Thread teardown may occur after CUDA has already shut down. Do not
+        // throw from a destructor, and release on the handle's original device.
+        int previous = -1;
+        if (cudaGetDevice(&previous) != cudaSuccess) return;
+        if (previous != device && cudaSetDevice(device) != cudaSuccess) return;
+        if (value) cublasLtDestroy(value);
+        if (previous != device) cudaSetDevice(previous);
+    }
 };
-#endif
+
+cublasLtHandle_t blaslt_handle(int device) {
+    // Destruction synchronizes the device, so keep handles between forward
+    // calls. Each host thread/device gets its own handle; stream is passed to
+    // every matmul explicitly. The caller has already set its CUDAGuard.
+    thread_local std::unordered_map<int, std::unique_ptr<LocalLtHandle>> handles;
+    auto& handle = handles[device];
+    if (!handle) handle = std::make_unique<LocalLtHandle>(device);
+    return handle->value;
+}
 
 int small_int(int64_t value, const char* name) {
     TORCH_CHECK(value > 0 && value <= INT_MAX, name, " must fit a positive int32");
@@ -31,9 +53,11 @@ int small_int(int64_t value, const char* name) {
 
 void require_hopper(const Tensor& x) {
     TORCH_CHECK(x.is_cuda(), "cuda_fp8 requires CUDA tensors; there is no CPU fallback");
-    const auto* prop = at::cuda::getDeviceProperties(x.get_device());
-    TORCH_CHECK(prop->major == 9, "cuda_fp8 targets Hopper (H800/H100, compute capability 9.x); got ",
-                prop->major, ".", prop->minor);
+    int major = 0, minor = 0;
+    C10_CUDA_CHECK(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, x.get_device()));
+    C10_CUDA_CHECK(cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, x.get_device()));
+    TORCH_CHECK(major == 9, "cuda_fp8 targets Hopper (H800/H100/H200, compute capability 9.x); got ",
+                major, ".", minor);
 }
 
 void block_size(int64_t value, const char* name) {
@@ -113,12 +137,7 @@ Tensor forward(Tensor q, Tensor k, Tensor v, int64_t bq, int64_t k_quant,
         alpha.data_ptr<float>(), mass.data_ptr<float>(), accum.data_ptr<float>(), output.data_ptr<float>(),
         workspace.data_ptr(), static_cast<size_t>(workspace.numel())
     };
-#ifdef _WIN32
-    LocalLtHandle local_handle;
-    auto handle = local_handle.value;
-#else
-    auto handle = at::cuda::getCurrentCUDABlasLtHandle();
-#endif
+    auto handle = blaslt_handle(q.get_device());
     vc::forward(q.data_ptr<float>(), k.data_ptr<float>(), v.data_ptr<float>(), s, buffers,
                 handle, c10::cuda::getCurrentCUDAStream(q.get_device()).stream());
     return output.to(original_type);

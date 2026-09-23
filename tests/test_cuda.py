@@ -18,7 +18,7 @@ if os.environ.get("VC_REQUIRE_CUDA") == "1":
     if not _has_hopper() or importlib.util.find_spec("vc_attention._cuda_ext") is None:
         raise RuntimeError("VC_REQUIRE_CUDA=1: a Hopper GPU and built extension are required; refusing skipped verification")
 
-hopper = pytest.mark.skipif(not _has_hopper(), reason="requires H800/H100 Hopper GPU")
+hopper = pytest.mark.skipif(not _has_hopper(), reason="requires H800/H100/H200 Hopper GPU")
 
 
 def test_cuda_rejects_cpu_without_fallback():

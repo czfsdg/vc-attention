@@ -27,7 +27,7 @@ def _attention(q, k, v, cfg, *, cache, step, total_steps, request_id, layer_id, 
     if q.device.type != "cuda":
         raise ValueError("cuda_fp8 requires CUDA tensors; no CPU/NPU fallback")
     if torch.cuda.get_device_capability(q.device)[0] != 9:
-        raise ValueError("cuda_fp8 requires Hopper (H800/H100, compute capability 9.x)")
+        raise ValueError("cuda_fp8 requires Hopper (H800/H100/H200, compute capability 9.x)")
     if q.shape[-1] > 128 or v.shape[-1] > 128:
         raise ValueError("cuda_fp8 supports Q/K/V head dimensions <= 128")
     if not math.isfinite(scale) or scale <= 0:
@@ -66,7 +66,7 @@ def preflight(device="cuda:0"):
 
     device = torch.device(device)
     if device.type != "cuda" or torch.cuda.get_device_capability(device)[0] != 9:
-        raise RuntimeError("Preflight requires an H800/H100-class Hopper GPU")
+        raise RuntimeError("Preflight requires an H800/H100/H200-class Hopper GPU")
     ext = _extension()
     x = torch.tensor([0, -1, -1.6, -8, -14, -100, -float("inf")], device=device) / math.log2(math.e)
     torch.testing.assert_close(ext.expcast_codes(x), expcast_codes(x), rtol=0, atol=0)

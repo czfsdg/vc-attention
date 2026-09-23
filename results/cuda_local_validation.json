@@ -2,7 +2,7 @@
   "date": "2026-09-23",
   "target": {
     "os": "Linux",
-    "gpu": "NVIDIA H800",
+    "gpu": "NVIDIA Hopper (H800/H100/H200)",
     "architecture": "sm_90",
     "remote_execution_performed": false
   },
@@ -14,10 +14,22 @@
     "gpu": "NVIDIA GeForce RTX 3060 Laptop GPU",
     "gpu_architecture": "sm_86"
   },
+  "reported_remote_environment": {
+    "source": "user-provided build log",
+    "gpu": "NVIDIA H200",
+    "python": "3.12",
+    "torch": "2.13.0+cu130",
+    "cuda_toolkit": "13.0.88",
+    "status_before_fix": "compilation failed: cusparse.h missing via ATen/cuda/CUDAContext.h",
+    "status_after_fix": "awaiting remote rebuild"
+  },
   "checks": {
     "nvcc_sm90_ptx_compilation": "passed",
     "pytorch_extension_sm90_compilation_and_link": "passed",
+    "build_with_cusparse_and_cusolver_headers_blocked": "passed; compiler include trace and separate failing header probes checked",
     "extension_import_and_build_info": "passed",
+    "native_cuda_runtime_device_query": "passed; local Ampere device correctly rejected by Hopper guard",
+    "validation_script_overrides_container_architectures": "passed with stubbed python3/nvcc commands and inherited multi-architecture list",
     "reference_editable_install": "passed",
     "python_syntax": "passed",
     "tests_passed": 35,
