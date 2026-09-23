@@ -1,11 +1,14 @@
 # Hopper (H800/H100/H200) CUDA C++ implementation
 
-This adds `Config(backend="cuda_fp8")` to the existing VC-Attention API. It is
-**VC-Attention (V-Smooth + ExpCast), not the SageAttention K-smoothing recipe**.
+This provides `Config(backend="cuda_fp8")` for VC-Attention (V-Smooth + ExpCast).
+Version 0.2.0 adds paper-described K centering and Q/K Hadamard preprocessing,
+corrects ExpCast FMA rounding and scaled V-mean storage. **Rebuild after pulling.**
+See [PAPER_ALIGNMENT.md](PAPER_ALIGNMENT.md) for the numerical contract and
+remaining implementation choices; this is not an author-code reproduction.
 
 ## Implementation and current validation
 
-- `csrc/kernels.cu`: actual CUDA kernels for Q/K E4M3 quantization, per-channel V
+- `csrc/kernels.cu`: actual CUDA kernels for K centering, Q/K Hadamard and E4M3 quantization, per-channel V
   residual quantization, ExpCast, online Softmax, and V-mean recovery.
 - Both QK and PV use **cuBLASLt E4M3 x E4M3 GEMM with FP32 accumulation/output**.
   There is no FP32-matmul simulation fallback. FP8 fast accumulation is disabled.
@@ -22,19 +25,19 @@ This adds `Config(backend="cuda_fp8")` to the existing VC-Attention API. It is
 - This is a **multi-kernel correctness baseline**, not a fully fused FlashAttention
   kernel. Tiles and states pass through device memory between calls. No
   performance parity or speedup relative to FlashAttention/SDPA is claimed.
-- The user's H200 run passed native FP8 preflight and all 60 selected tests.
-  Performance still needs measurement with the benchmark below.
+- The user's **0.1.0** H200 run passed native FP8 preflight and all 60 selected tests.
+  Version 0.2.0 requires a new native preflight, test run and benchmark.
 
-Local checks completed on 2026-09-23: the extension compiled for `sm_90` and
-loaded successfully with CUDA 12.1 / PyTorch 2.3.1 on Windows; 59 CPU/reference,
-argument-validation, import and benchmark-logic tests passed. The 24 Hopper tests and 2 NPU tests were
-skipped because the local GPU is an RTX 3060. These results do not establish
-Linux build compatibility or H800 runtime correctness. See
+Local 0.2.0 checks on 2026-09-23: the extension compiled for `sm_86` and `sm_90`
+with CUDA 12.1 / PyTorch 2.3.1 on Windows. **115 tests passed**, including real
+CUDA Q/K preprocessing and ExpCast execution on RTX 3060; 28 Hopper attention
+tests and 2 NPU tests were skipped. These results do not establish
+0.2.0 Linux build compatibility or H800/H200 attention runtime correctness. See
 `results/cuda_local_validation.json` for the recorded scope.
-The extension also rebuilt with cuSPARSE/cuSOLVER headers deliberately blocked;
+The previous 0.1.0 extension also rebuilt with cuSPARSE/cuSOLVER headers deliberately blocked;
 separate compiler probes confirmed the header guards were active.
 
-The user subsequently supplied a successful Linux H200 log: Python 3.12,
+For 0.1.0, the user supplied a successful Linux H200 log: Python 3.12,
 PyTorch 2.13.0+cu130, nvcc 13.0.88, cuBLASLt 130101, native FP8 preflight passed,
 and **60 tests passed in 8.00 s**. This establishes that test suite's correctness
 coverage on that environment, not measured speed or model quality. The log was
@@ -110,10 +113,12 @@ out, stats = attention(q, k, v, cfg)
 print(out.shape, stats)
 ```
 
-The default `Config()` still selects the existing `reference` backend. Existing
-`npu_fp8` behavior is unchanged.
+The default `Config()` selects the `reference` backend; K centering and Q/K
+Hadamard now default to enabled in all configs. Q/K must already have RoPE
+applied if the model uses it. NPU has not been revalidated; the new reference
+ExpCast requires FP64 intermediate arithmetic.
 
-Supported v1 contract:
+Supported 0.2.0 contract:
 
 - Forward-only inference, dense noncausal unmasked MHA in `[B,H,N,D]` layout.
 - FP16/BF16/FP32 inputs, output uses the input dtype; no backward implementation.
@@ -121,9 +126,10 @@ Supported v1 contract:
 - Noncontiguous inputs and sequence tails are supported by copies/padding.
 - Q and KV block sizes are multiples of 32 in `[32,256]`, default 128.
 - K quantization block is a multiple of KV block and <= 4096, default 256.
-- Q/K share one scale per quantization block/head. V residual scales are per
-  KV block/channel. Internal channel padding is to 32 and is excluded from
-  maxima/means; padded keys get zero probability, not Softmax mass.
+- Each Q or K quantization block/head has one scale. V residual scales are per
+  KV block/channel. Hadamard pads channels to a power of two before rotation;
+  transformed channels participate in quantization. Softmax scaling uses the
+  original head dimension. GEMM alignment padding is to 32; padded keys get zero probability.
 - Mean precision, denoising window, permutation refresh, and request isolation
   follow the original `Config` / `LayoutCache` contract.
 - No causal mask, GQA, dropout, sparse selection, CUDA Graph/torch.compile
@@ -133,12 +139,15 @@ With ExpCast disabled, denominator and V-mean recovery use the FP32 exponential
 row sum; PV uses rounded E4M3 probabilities. With ExpCast enabled, both use the
 decoded E4M3 values. This distinction is intentional and matches
 `src/vc_attention/core.py`.
+ExpCast uses an explicit single FP32 FMA before RNE. Residuals subtract the
+FP32 V mean, and `mean / V_scale` is physically stored at the configured
+precision (FP16 by default). The recovery and residual terms share the scale.
 
 ## Validate before benchmarking
 
 ```bash
 python3 -m vc_attention.cuda_backend --device cuda:0
-VC_REQUIRE_CUDA=1 python3 -m pytest tests/test_core.py tests/test_adapter.py tests/test_cuda.py tests/test_imports.py tests/test_benchmark.py -q
+VC_REQUIRE_CUDA=1 python3 -m pytest tests/test_core.py tests/test_adapter.py tests/test_cuda.py tests/test_paper_alignment.py tests/test_imports.py tests/test_benchmark.py -q
 ```
 
 Or, after installing build/test dependencies, run `bash scripts/validate_h800.sh`

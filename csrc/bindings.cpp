@@ -65,8 +65,41 @@ void block_size(int64_t value, const char* name) {
                 name, " must be a multiple of 32 in [32, 256]");
 }
 
+std::vector<Tensor> preprocess_qk(Tensor q, Tensor k, bool k_smooth, bool hadamard) {
+    TORCH_CHECK(q.is_cuda() && k.device() == q.device(), "Q/K preprocessing requires one CUDA device");
+    const c10::cuda::CUDAGuard guard(q.device());
+    const at::NoGradGuard no_grad;
+    TORCH_CHECK(q.dim() == 4 && k.dim() == 4 && q.numel() && k.numel(), "Expected nonempty [B,H,N,D]");
+    TORCH_CHECK(q.size(0) == k.size(0) && q.size(1) == k.size(1) && q.size(3) == k.size(3), "Q/K shapes must match");
+    const int width = small_int(q.size(3), "head dimension");
+    TORCH_CHECK(width <= 128, "Q/K preprocessing supports head dimensions <= 128");
+    q = q.to(at::kFloat).contiguous();
+    k = k.to(at::kFloat).contiguous();
+    if (!k_smooth && !hadamard) return {q, k};
+    int out_width = width;
+    if (hadamard) {
+        out_width = 1;
+        while (out_width < width) out_width *= 2;
+    }
+    const int heads = small_int(q.size(0) * q.size(1), "B*H");
+    const int nq = small_int(q.size(2), "Q sequence length");
+    const int nk = small_int(k.size(2), "K sequence length");
+    small_int(int64_t(heads) * nq, "Q transform grid");
+    small_int(int64_t(heads) * nk, "K transform grid");
+    auto mean = k_smooth ? k.mean(2, true) : Tensor();
+    auto qr = hadamard ? at::empty({q.size(0), q.size(1), nq, out_width}, q.options()) : q;
+    auto kr = at::empty({k.size(0), k.size(1), nk, out_width}, k.options());
+    const auto stream = c10::cuda::getCurrentCUDAStream(q.get_device()).stream();
+    if (hadamard)
+        vc::transform_qk(q.data_ptr<float>(), nullptr, qr.data_ptr<float>(), heads, nq, width, out_width, true, stream);
+    vc::transform_qk(k.data_ptr<float>(), k_smooth ? mean.data_ptr<float>() : nullptr,
+                     kr.data_ptr<float>(), heads, nk, width, out_width, hadamard, stream);
+    return {qr, kr};
+}
+
 Tensor forward(Tensor q, Tensor k, Tensor v, int64_t bq, int64_t k_quant,
-               int64_t bk, bool smooth, bool expcast, int64_t mean_type, double scale) {
+               int64_t bk, bool smooth, bool expcast, int64_t mean_type, double scale,
+               bool k_smooth, bool hadamard) {
     require_hopper(q);
     const c10::cuda::CUDAGuard guard(q.device());
     const at::NoGradGuard no_grad;
@@ -88,8 +121,8 @@ Tensor forward(Tensor q, Tensor k, Tensor v, int64_t bq, int64_t k_quant,
     TORCH_CHECK(mean_type >= 0 && mean_type <= 2, "Invalid mean dtype");
 
     const auto original_type = q.scalar_type();
-    q = q.to(at::kFloat).contiguous();
-    k = k.to(at::kFloat).contiguous();
+    auto transformed = preprocess_qk(q, k, k_smooth, hadamard);
+    q = transformed[0]; k = transformed[1];
     v = v.to(at::kFloat).contiguous();
     vc::Shape s{};
     s.heads = small_int(q.size(0) * q.size(1), "B*H");
@@ -120,7 +153,8 @@ Tensor forward(Tensor q, Tensor k, Tensor v, int64_t bq, int64_t k_quant,
     auto qs = at::empty({s.heads, s.nq_tiles}, f);
     auto ks = at::empty({s.heads, s.nk_quant_tiles}, f);
     auto vs = at::empty({s.heads, s.nk_tiles, s.vp}, f);
-    auto means = at::empty_like(vs);
+    const auto mean_dtype = mean_type == 1 ? at::kHalf : mean_type == 2 ? at::kBFloat16 : at::kFloat;
+    auto means = at::empty(vs.sizes(), f.dtype(mean_dtype));
     auto scores = at::empty({s.bk, s.bq}, f);
     auto pv = at::empty({s.vp, s.bq}, f);
     auto maximum = at::empty({s.bq}, f);
@@ -132,7 +166,7 @@ Tensor forward(Tensor q, Tensor k, Tensor v, int64_t bq, int64_t k_quant,
     auto workspace = at::empty({32 * 1024 * 1024}, bytes);
     vc::Buffers buffers{
         q8.data_ptr<uint8_t>(), k8.data_ptr<uint8_t>(), v8.data_ptr<uint8_t>(), p8.data_ptr<uint8_t>(),
-        qs.data_ptr<float>(), ks.data_ptr<float>(), vs.data_ptr<float>(), means.data_ptr<float>(),
+        qs.data_ptr<float>(), ks.data_ptr<float>(), vs.data_ptr<float>(), means.data_ptr(),
         scores.data_ptr<float>(), pv.data_ptr<float>(), maximum.data_ptr<float>(), denom.data_ptr<float>(),
         alpha.data_ptr<float>(), mass.data_ptr<float>(), accum.data_ptr<float>(), output.data_ptr<float>(),
         workspace.data_ptr(), static_cast<size_t>(workspace.numel())
@@ -195,7 +229,9 @@ Tensor expcast_codes(Tensor input) {
 }  // namespace
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.attr("numerical_contract_version") = 2;
     m.def("forward", &forward, "VC FP8 attention on Hopper (forward only)");
+    m.def("preprocess_qk", &preprocess_qk, "Post-RoPE K centering and normalized Q/K Hadamard (CUDA FP32)");
     m.def("group_values", &group_values, "CUDA Lloyd clustering with stable permutation");
     m.def("expcast_codes", &expcast_codes, "ExpCast FP8 payload bytes");
     m.def("build_info", []() {
@@ -204,6 +240,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         info["cublaslt_version"] = cublasLtGetVersion();
         info["matmul"] = "cuBLASLt E4M3 x E4M3, FP32 output/accumulation";
         info["fully_fused_attention"] = false;
+        info["numerical_contract_version"] = 2;
+        info["expcast_rounding"] = "FP32 FMA then RNE";
+        info["value_mean_storage"] = "mu / per-channel V scale at configured mean dtype";
         return info;
     });
 }

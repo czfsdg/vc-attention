@@ -23,7 +23,8 @@ if os.environ.get("VC_ATTENTION_BUILD_CUDA", "1") != "0":
         libraries=["cublasLt"],
         extra_compile_args={
             "cxx": ["/O2", "/std:c++17"] if sys.platform == "win32" else ["-O3", "-std=c++17"],
-            # Preserve the separate multiply/add rounding of ExpCast.
+            # ExpCast explicitly uses __fmaf_rn; keep other arithmetic rounding
+            # stable for reference comparisons, independent of auto-contraction.
             "nvcc": ["-O3", "-std=c++17", "--fmad=false", "-lineinfo"],
         },
     )]
@@ -31,7 +32,7 @@ if os.environ.get("VC_ATTENTION_BUILD_CUDA", "1") != "0":
 
 setup(
     name="vc-attention",
-    version="0.1.0",
+    version="0.2.0",
     description="VC-Attention reference and CUDA C++ FP8 backend for Hopper",
     packages=["vc_attention"],
     package_dir={"": "src"},

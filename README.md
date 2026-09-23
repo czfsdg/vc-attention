@@ -2,8 +2,9 @@
 
 新增 H800 CUDA C++ 后端：`Config(backend="cuda_fp8")`。源码、`pip install .`
 构建方式和远端验证步骤见 [CUDA_README.md](CUDA_README.md)。QK/PV 使用真实
-cuBLASLt FP8 矩阵乘；用户提供的 H200 日志已通过原生自检和 60 项测试，
-尚不是完整融合内核，性能有待实测。与 FlashAttention 2/3/4、SageAttention
+cuBLASLt FP8 矩阵乘；用户提供的 H200 日志中，旧版 0.1.0 已通过原生自检和 60 项测试。
+当前 0.2.0 增加论文数值对齐，必须重编译并复验，见 [PAPER_ALIGNMENT.md](PAPER_ALIGNMENT.md)。
+尚不是完整融合内核。与 FlashAttention 2/3/4、SageAttention
 的对比命令见 [BENCHMARK.md](BENCHMARK.md)。
 下文原有 A5 实验记录和两种后端的说明保留为历史背景；默认后端仍为 `reference`。
 
@@ -25,7 +26,7 @@ cuBLASLt FP8 矩阵乘；用户提供的 H200 日志已通过原生自检和 60 
 
 两个实验执行后端：
 
-- `reference`：E4M3 编码后解码，用 FP32 矩阵乘进行数值模拟，可在 CPU 或 NPU 上执行。**不是 FP8 硬件测速。**
+- `reference`：E4M3 编码后解码，用 FP32 矩阵乘进行数值模拟。当前在 CPU/CUDA 验证；新版 ExpCast 参考需要 FP64 中间运算，NPU 尚未重新验证。**不是 FP8 硬件测速。**
 - `npu_fp8`：调用 `torch_npu.npu_add_quant_matmul_` 的 MX 接口，E8M0 scale 字节固定为 127（即 1），让 Cube 消费原始 E4M3 payload；普通量化 scale 在外部恢复。FP32 累加。此路径先跑设备自检，不支持时直接报错，无静默回退。
 
 两者都以 Python 分块调度，尚未融合到 FIA。每个 tile 都会下发多个算子，**不应把原型时延解释成 ExpCast 的加速能力**。长序列完整 H3 推理可能非常慢；优先回放少量 query，保留完整 K/V。
@@ -34,12 +35,12 @@ cuBLASLt FP8 矩阵乘；用户提供的 H200 日志已通过原生自检和 60 
 
 按 [VC-Attention v1](https://arxiv.org/html/2609.15810v1) 的公式重建，非作者代码：
 
-- ExpCast：`uint8(clamp(round((S-rowmax)*8*log2(e)+119.65),0,120))`，随后按位 `view(float8_e4m3fn)`，概率 scale 为 `1/256`。Eager multiply/add 不保证单次 FMA 舍入，融合后须重新对拍边界字节。
-- V-Smooth：每头独立聚类，K/V 同序重排，Q 保持原序；块均值以 FP16 保存，残差按每块每通道 E4M3 量化；`rowmass * mean` 加到在线累加器，随 running-max 一起 rescale。
+- ExpCast：`uint8(clamp(round(fma(S-rowmax,8*log2(e),119.65)),0,120))`，随后按位 `view(float8_e4m3fn)`，概率 scale 为 `1/256`。CUDA 使用单次 FP32 FMA，参考用加宽中间运算模拟；已增加边界字节测试。
+- V-Smooth：每头独立聚类，K/V 同序重排，Q 保持原序；用 FP32 均值计算残差，按每块每通道 E4M3 量化；`mean / V_scale` 默认以 FP16 保存，补均值与 PV 残差共用 scale，随 running-max 一起 rescale。
 - 普通 exp 路径沿公式 6，用 FP32 exp 的 rowmass 归一化/补均值，PV 使用舍入后的 FP8 P；ExpCast 路径用解码后的 P 同时计算 PV、rowmass 和归一化。
 - 默认前 `ceil(0.25 * 实际去噪步数)` 步去均值，间隔 4 步更新 permutation；之后保留 permutation 并关闭去均值。只缓存排列/中心，每次重新算当前 V 的均值和残差。4 步模型只有第 0 步去均值。
 - 聚类默认 8 类、2 次 Lloyd 迭代，确定性等间距初始化。这是可调实验选择，未声称复现作者的聚类内核。
-- Q/K 分别按 128/256 tokens、128 channels 块量化。未额外加入 QK Hadamard、K smoothing，避免扩大本轮变量。
+- 默认先对 post-RoPE K 按通道去均值，再对 Q/K 做共同的归一化 Hadamard，之后分别按 128/256 tokens、128 channels 块量化。具体 Hadamard 约定和量化块是本实现选择，详见论文对齐记录。
 
 `fp8_control / expcast / v_smooth / combined` 四组共享同一原型量化契约。**`fp8_control` 不等于现有 MindIE FP8 FIA**：后者 V/P 的块结构、概率处理和内部累加存在差异，报告中另列 `mindie_fp8`，不能把两者差值全部归因于 V-Smooth/ExpCast。
 

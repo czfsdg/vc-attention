@@ -9,7 +9,7 @@
 | `flash3` | `flash_attn_3.flash_attn_interface.flash_attn_func` | `flash_attn_3 3.0.0` |
 | `flash4` | `flash_attn.cute.flash_attn_func` | `flash-attn-4 4.0.0b31` |
 | `sage` | `sageattention.sageattn` | `sageattention 2.2.0` |
-| `vc` | `vc_attention.attention(..., Config(backend="cuda_fp8", expcast=True, v_smooth=True))` | `vc-attention 0.1.0` |
+| `vc` | `vc_attention.attention(..., Config(backend="cuda_fp8", expcast=True, v_smooth=True))` | `vc-attention 0.2.0` |
 
 运行报告会读取实际安装版本，并保存接口路径和参数。老版 FA3 源码安装若没有
 `flash_attn_3.flash_attn_interface`，会尝试同为 FA3 的 `flash_attn_interface`。
@@ -17,11 +17,12 @@
 
 ## 直接运行
 
-你已在 H200 完成 VC 编译、自检和 60 项测试。这次只更新测速脚本和文档，
-拉取后可以直接测，无须重新编译算子，也无须重装已有的四个 Attention 包。
+你之前在 H200 通过的是 0.1.0。当前 0.2.0 修改了原生 CUDA 与数值契约，
+拉取后须重新编译并自检，再运行测速；已有的四个 Attention 包不需要重装。
 
 ```bash
 git pull --ff-only
+bash scripts/validate_h800.sh
 python3 scripts/benchmark_cuda.py \
   --batch 1 --queries 1024 --tokens 1024 --heads 2 --dim 128 \
   --dtype bfloat16 --warmup 5 --repeats 20 --trials 3 \
@@ -104,14 +105,17 @@ python3 scripts/benchmark_cuda.py --vc-ablation --output results/h200_ablation.j
 
 在同一份 Q/K/V 上运行原生 CUDA、同配置的 Python 量化参考、标准 FP32
 Attention，才能判断约 5% 的误差是否也存在于量化算法参考中。
-拉取更新后直接复制下面两行，不需要重新编译：
+拉取更新后先重建新版扩展：
 
 ```bash
 git pull --ff-only
+bash scripts/validate_h800.sh
 python3 scripts/benchmark_cuda.py --backends vc --vc-ablation --vc-reference-check --check-queries 0 --output results/h200_vc_reference.json
 ```
 
-默认形状仍为 `[1,2,1024,128]`，BF16 输入、固定随机种子 1234；四组消融与上次相同。
+默认形状仍为 `[1,2,1024,128]`，BF16 输入、固定随机种子 1234。
+0.2.0 的四组都默认开启 K 去均值、Q/K Hadamard，并使用新版 FMA 与缩放均值契约；
+因此不能把新旧结果差异单独归因于某一个改动。详见 [PAPER_ALIGNMENT.md](PAPER_ALIGNMENT.md)。
 `--vc-reference-check` 会在全部测速结束后，分别运行四组同配置的
 `Config(backend="reference")`。只改 backend，其余分块、量化、ExpCast、V-Smooth、
 聚类及均值精度参数保持一致。参考在同一张 GPU 上运行，FP8 编码/解码后使用

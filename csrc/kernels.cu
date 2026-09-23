@@ -59,14 +59,36 @@ __device__ float decode_positive(uint8_t code) {
 }
 
 __device__ uint8_t expcast_code(float x) {
-    // Match the Python eager implementation: multiply and add round separately.
-    const float u = __fadd_rn(__fmul_rn(x, 11.541560173034668f), 119.6500015258789f);
+    // Paper Eq. 7: one FP32 fused multiply-add, then round to nearest even.
+    const float u = __fmaf_rn(x, 11.541560173034668f, 119.6500015258789f);
     return static_cast<uint8_t>(__float2int_rn(fminf(120.0f, fmaxf(0.0f, u))));
 }
 
 __global__ void expcast_kernel(const float* x, uint8_t* y, int64_t n) {
     for (int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
          i < n; i += int64_t(blockDim.x) * gridDim.x) y[i] = expcast_code(x[i]);
+}
+
+__global__ void transform_qk_kernel(const float* input, const float* mean, float* output,
+                                    int tokens, int width, int out_width, bool hadamard, float normalization) {
+    __shared__ float values[128];
+    const int row = blockIdx.x;
+    const int col = threadIdx.x;
+    float value = col < width ? input[int64_t(row) * width + col] : 0.0f;
+    if (mean && col < width) value -= mean[int64_t(row / tokens) * width + col];
+    values[col] = value;
+    __syncthreads();
+    if (hadamard) {
+        for (int stride = 1; stride < out_width; stride *= 2) {
+            const float other = values[col ^ stride];
+            const float own = values[col];
+            __syncthreads();
+            values[col] = (col & stride) ? other - own : own + other;
+            __syncthreads();
+        }
+        value = values[col] * normalization;
+    }
+    if (col < out_width) output[int64_t(row) * out_width + col] = value;
 }
 
 // A scale belongs to a sequence block, independently for each batch/head.
@@ -100,7 +122,7 @@ __global__ void quantize_qk(const float* input, uint8_t* output, float* scales,
 // Store each V tile column-major: [head, kv_tile, channel, token]. This is
 // precisely the non-transposed B operand required by FP8 cuBLASLt TN GEMM.
 __global__ void prepare_values(const float* input, uint8_t* output, float* scales,
-                               float* means, Shape s) {
+                               void* means, Shape s) {
     __shared__ float scratch[256];
     const int channel = blockIdx.x % s.vp;
     const int tile_head = blockIdx.x / s.vp;
@@ -114,17 +136,24 @@ __global__ void prepare_values(const float* input, uint8_t* output, float* scale
             sum += input[(int64_t(head) * s.nk + start + row) * s.dv + channel];
     }
     float mean = s.smooth ? reduce_sum(sum, scratch) / count : 0.0f;
-    if (s.mean_type == 1) mean = __half2float(__float2half_rn(mean));
-    if (s.mean_type == 2) mean = __bfloat162float(__float2bfloat16_rn(mean));
     float amax = 0.0f;
     for (int row = threadIdx.x; row < count; row += blockDim.x) {
         if (channel < s.dv)
             amax = fmaxf(amax, fabsf(input[(int64_t(head) * s.nk + start + row) * s.dv + channel] - mean));
     }
     amax = reduce_max(amax, scratch);
-    const float scale = amax > 0.0f ? amax / 448.0f : 1.0f;
+    float scale = amax > 0.0f ? amax / 448.0f : 1.0f;
+    const float mean_limit = s.mean_type == 1 ? 65504.0f
+                           : s.mean_type == 2 ? 3.3895313892515355e38f : 3.4028234663852886e38f;
+    scale = fmaxf(scale, fabsf(mean) / mean_limit);
     const int64_t index = int64_t(tile_head) * s.vp + channel;
-    if (threadIdx.x == 0) { means[index] = mean; scales[index] = scale; }
+    if (threadIdx.x == 0) {
+        const float scaled_mean = mean / scale;
+        if (s.mean_type == 1) static_cast<__half*>(means)[index] = __float2half_rn(scaled_mean);
+        else if (s.mean_type == 2) static_cast<__nv_bfloat16*>(means)[index] = __float2bfloat16_rn(scaled_mean);
+        else static_cast<float*>(means)[index] = scaled_mean;
+        scales[index] = scale;
+    }
     for (int row = threadIdx.x; row < s.bk; row += blockDim.x) {
         const float value = row < count && channel < s.dv
             ? input[(int64_t(head) * s.nk + start + row) * s.dv + channel] - mean : 0.0f;
@@ -182,8 +211,11 @@ __global__ void accumulate(Buffers b, Shape s, int head, int k_tile) {
     const int row = i / s.vp;
     const int col = i % s.vp;
     const int64_t meta = (int64_t(head) * s.nk_tiles + k_tile) * s.vp + col;
-    const float product = b.pv[col * s.bq + row] * (b.vs[meta] / 256.0f);
-    b.accum[i] = (b.alpha[row] * b.accum[i] + product) + b.mass[row] * b.mean[meta];
+    const float mean = s.mean_type == 1 ? __half2float(static_cast<const __half*>(b.mean)[meta])
+                     : s.mean_type == 2 ? __bfloat162float(static_cast<const __nv_bfloat16*>(b.mean)[meta])
+                     : static_cast<const float*>(b.mean)[meta];
+    const float contribution = (b.pv[col * s.bq + row] / 256.0f + b.mass[row] * mean) * b.vs[meta];
+    b.accum[i] = b.alpha[row] * b.accum[i] + contribution;
 }
 
 __global__ void write_output(Buffers b, Shape s, int head, int q_tile) {
@@ -258,6 +290,14 @@ void expcast(const float* input, uint8_t* output, int64_t size, cudaStream_t str
     if (!size) return;
     expcast_kernel<<<static_cast<unsigned>(std::min<int64_t>((size + 255) / 256, 65535)), 256, 0, stream>>>(input, output, size);
     cuda_check(cudaGetLastError(), "ExpCast launch");
+}
+
+void transform_qk(const float* input, const float* mean, float* output,
+                  int heads, int tokens, int width, int out_width,
+                  bool hadamard, cudaStream_t stream) {
+    const float normalization = static_cast<float>(1.0 / std::sqrt(static_cast<double>(out_width)));
+    transform_qk_kernel<<<heads * tokens, 128, 0, stream>>>(input, mean, output, tokens, width, out_width, hadamard, normalization);
+    cuda_check(cudaGetLastError(), "Q/K centering and Hadamard launch");
 }
 
 void forward(const float* q, const float* k, const float* v,

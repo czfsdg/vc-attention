@@ -26,8 +26,13 @@ class Config:
     refresh_interval: int = 4
     mean_dtype: str = "float16"
     backend: str = "reference"
+    k_smooth: bool = True
+    qk_hadamard: bool = True
 
     def __post_init__(self):
+        for name in ("k_smooth", "qk_hadamard"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be a bool")
         for name in ("q_block", "k_quant_block", "kv_block", "clusters", "iterations", "refresh_interval"):
             if (
                 isinstance(getattr(self, name), bool)
@@ -55,12 +60,59 @@ class Config:
 def expcast_codes(shifted_scores):
     """Eq. 7: RNE and byte reinterpretation, NOT uint8-to-FP8 numeric cast.
 
-    Input is in natural-log units and already row-max shifted. Eager PyTorch
-    multiply/add need not fuse; a future native implementation must test FMA
-    halfway cases independently. -inf maps to zero; masked rows are rejected
-    by the public experiment entry rather than receiving invented semantics.
+    Emulate a single FP32 FMA rounding using a widened product/sum followed by
+    one FP32 cast (constants below are exactly FP32). This reference is not a
+    speed path. CUDA uses __fmaf_rn directly. -inf maps to zero.
     """
-    return torch.round(shifted_scores.float() * (8.0 * math.log2(math.e)) + 119.65).clamp(0, 120).to(torch.uint8)
+    code = (shifted_scores.float().double() * 11.541560173034668 + 119.6500015258789).float()
+    return torch.round(code).clamp(0, 120).to(torch.uint8)
+
+
+def hadamard(x):
+    """Normalized Sylvester transform on channels, with zero padding if needed.
+
+    A deterministic transform is used: the paper does not publish a sign seed
+    or Hadamard convention. Q and K always use the same orthogonal transform.
+    """
+    width = 1 << (x.shape[-1] - 1).bit_length()
+    x = torch.nn.functional.pad(x.float(), (0, width - x.shape[-1]))
+    step = 1
+    while step < width:
+        groups = x.reshape(*x.shape[:-1], -1, 2, step)
+        left, right = groups[..., 0, :], groups[..., 1, :]
+        x = torch.stack((left + right, left - right), dim=-2).reshape(*x.shape[:-1], width)
+        step *= 2
+    return x * (width ** -0.5)
+
+
+def preprocess_qk(q, k, *, k_smooth, qk_hadamard):
+    """Inputs are post-RoPE. Center K over all tokens, then rotate both operands.
+
+    Centering commutes with the linear rotation in exact arithmetic. Do not
+    reapply RoPE; its model-specific parameters belong to the caller.
+    """
+    q, k = q.float(), k.float()
+    if k_smooth:
+        k = k - k.mean(dim=-2, keepdim=True)
+    if qk_hadamard:
+        q, k = hadamard(q), hadamard(k)
+    return q, k
+
+
+def prepare_value_tile(tile, active, cfg):
+    """Appendix B: encode residuals, store mu / scale at mean_dtype precision."""
+    mean = tile.mean(-2, keepdim=True) if active else torch.zeros_like(tile[..., :1, :])
+    residual = tile - mean
+    if not cfg.quantize:
+        return residual, torch.ones_like(mean), mean
+    vscale = residual.abs().amax(-2, keepdim=True) / 448.0
+    vscale = torch.where(vscale == 0, torch.ones_like(vscale), vscale)
+    # A nearly constant block can have a huge mu/scale. This finite-storage
+    # guard is an explicit engineering choice, not a paper-tuned parameter.
+    vscale = torch.maximum(vscale, mean.abs() / torch.finfo(getattr(torch, cfg.mean_dtype)).max)
+    payload = (residual / vscale).clamp(-448, 448).to(torch.float8_e4m3fn)
+    scaled_mean = (mean / vscale).to(getattr(torch, cfg.mean_dtype)).float()
+    return payload, vscale, scaled_mean
 
 
 def _encode(x, dims):
@@ -236,6 +288,7 @@ def attention(
     if pi is not None:
         kf = kf.gather(-2, pi.unsqueeze(-1).expand_as(kf))
         vf = vf.gather(-2, pi.unsqueeze(-1).expand_as(vf))
+    qf, kf = preprocess_qk(qf, kf, k_smooth=cfg.k_smooth, qk_hadamard=cfg.qk_hadamard)
     if cfg.backend == "npu_fp8":
         native_q = [_encode(qf[..., s : s + cfg.q_block, :], (-2, -1)) for s in range(0, qf.shape[-2], cfg.q_block)]
         native_k = [
@@ -248,15 +301,7 @@ def attention(
     values = []
     for start in range(0, vf.shape[-2], cfg.kv_block):
         tile = vf[..., start : start + cfg.kv_block, :]
-        mean = tile.mean(-2, keepdim=True) if active else torch.zeros_like(tile[..., :1, :])
-        if cfg.quantize:
-            mean = mean.to(getattr(torch, cfg.mean_dtype)).float()
-        residual = tile - mean
-        if cfg.quantize:
-            payload, vscale = _encode(residual, (-2,))
-        else:
-            payload, vscale = residual, torch.ones_like(mean)
-        values.append((payload, vscale, mean))
+        values.append(prepare_value_tile(tile, active, cfg))
     output = torch.empty((*q.shape[:-1], v.shape[-1]), device=q.device, dtype=torch.float32)
     tiles = 0
     for qs in range(0, q.shape[-2], cfg.q_block):
@@ -286,9 +331,9 @@ def attention(
                 probability = torch.exp(shifted)
                 p8 = (probability * 256.0).to(torch.float8_e4m3fn) if cfg.quantize else probability * 256.0
             rowmass = probability.sum(-1, keepdim=True)
-            residual, vscale, mean = values[j]
-            pv = _product(p8, residual, cfg.backend) * (vscale / 256.0)
-            accum = alpha * accum + pv + rowmass * mean
+            residual, vscale, scaled_mean = values[j]
+            contribution = (_product(p8, residual, cfg.backend) / 256.0 + rowmass * scaled_mean) * vscale
+            accum = alpha * accum + contribution
             denom = alpha * denom + rowmass
             rowmax = newmax
             tiles += 1
@@ -298,6 +343,9 @@ def attention(
         "smoothing_active": active,
         "layout_refreshed": refreshed,
         "expcast": cfg.expcast,
+        "k_smooth": cfg.k_smooth,
+        "qk_hadamard": cfg.qk_hadamard,
+        "numerical_contract_version": 2,
         "tiles": tiles,
         "native_fused_attention": False,
     }

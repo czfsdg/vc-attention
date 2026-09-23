@@ -1,4 +1,4 @@
-include README.md CUDA_README.md BENCHMARK.md REPORT.md PROVENANCE.json
+include README.md CUDA_README.md BENCHMARK.md PAPER_ALIGNMENT.md REPORT.md PROVENANCE.json
 include results/cuda_local_validation.json
 recursive-include src *.py
 recursive-include csrc *.cpp *.cu *.h

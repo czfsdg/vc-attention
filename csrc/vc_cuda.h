@@ -18,7 +18,8 @@ struct Shape {
 
 struct Buffers {
     uint8_t *q8, *k8, *v8, *p8;
-    float *qs, *ks, *vs, *mean;
+    float *qs, *ks, *vs;
+    void *mean;  // mu / V-scale, physically stored at mean_type precision.
     float *scores, *pv, *maximum, *denom, *alpha, *mass, *accum;
     float *output;
     void *workspace;
@@ -31,5 +32,8 @@ void forward(const float* q, const float* k, const float* v,
              const Shape& s, const Buffers& b,
              cublasLtHandle_t handle, cudaStream_t stream);
 void expcast(const float* input, uint8_t* output, int64_t size, cudaStream_t stream);
+void transform_qk(const float* input, const float* mean, float* output,
+                  int heads, int tokens, int width, int out_width,
+                  bool hadamard, cudaStream_t stream);
 
 }  // namespace vc

@@ -187,3 +187,17 @@ def test_current_stream_is_used():
         consumed = actual + 1
     stream.synchronize()
     torch.testing.assert_close(consumed.cpu(), expected + 1, atol=0.02, rtol=0.005)
+
+
+@hopper
+@pytest.mark.hopper
+@pytest.mark.parametrize("k_smooth,rotate", [(False, False), (False, True), (True, False), (True, True)])
+def test_qk_preprocessing_switches_with_original_width_scale(k_smooth, rotate):
+    q, k, v = _inputs((1, 2, 17, 35, 37, 21), torch.float32)
+    k += torch.linspace(-2, 2, 37)
+    cfg = Config(backend="cuda_fp8", v_smooth=True, expcast=True, clusters=1,
+                 k_smooth=k_smooth, qk_hadamard=rotate)
+    expected, _ = attention(q, k, v, replace(cfg, backend="reference"), scale=0.07)
+    actual, stats = attention(q.cuda(), k.cuda(), v.cuda(), cfg, scale=0.07)
+    assert stats["k_smooth"] == k_smooth and stats["qk_hadamard"] == rotate
+    torch.testing.assert_close(actual.cpu(), expected, atol=0.015, rtol=0.003)

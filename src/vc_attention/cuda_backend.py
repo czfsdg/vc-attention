@@ -7,13 +7,16 @@ import torch
 
 def _extension():
     try:
-        return importlib.import_module("vc_attention._cuda_ext")
+        ext = importlib.import_module("vc_attention._cuda_ext")
     except ImportError as exc:
         raise RuntimeError(
             "CUDA extension is missing or failed to load. On the H800 host run "
             "TORCH_CUDA_ARCH_LIST=9.0 python3 -m pip install . --no-build-isolation. "
             "No reference fallback was used. Original error: " + str(exc)
         ) from exc
+    if getattr(ext, "numerical_contract_version", None) != 2:
+        raise RuntimeError("Stale CUDA extension: rebuild with python3 -m pip install . --no-build-isolation --no-deps")
+    return ext
 
 
 def group_values(v, *, clusters, iterations, centers=None):
@@ -48,12 +51,15 @@ def _attention(q, k, v, cfg, *, cache, step, total_steps, request_id, layer_id, 
         v = v.gather(-2, pi.unsqueeze(-1).expand_as(v))
     mean_type = {"float32": 0, "float16": 1, "bfloat16": 2}[cfg.mean_dtype]
     output = ext.forward(q, k, v, cfg.q_block, cfg.k_quant_block, cfg.kv_block,
-                         active, cfg.expcast, mean_type, scale)
+                         active, cfg.expcast, mean_type, scale, cfg.k_smooth, cfg.qk_hadamard)
     return output, {
         "backend": "cuda_fp8",
         "smoothing_active": active,
         "layout_refreshed": refreshed,
         "expcast": cfg.expcast,
+        "k_smooth": cfg.k_smooth,
+        "qk_hadamard": cfg.qk_hadamard,
+        "numerical_contract_version": 2,
         "tiles": math.ceil(q.shape[-2] / cfg.q_block) * math.ceil(k.shape[-2] / cfg.kv_block),
         "native_fused_attention": False,
         "native_fp8_matmul": True,

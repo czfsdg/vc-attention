@@ -1,5 +1,19 @@
 {
   "date": "2026-09-23",
+  "paper_alignment_0_2_0": {
+    "numerical_contract_version": 2,
+    "build_architectures": ["sm_86", "sm_90"],
+    "native_wheel_build_install_and_import": "passed",
+    "tests_passed": 115,
+    "hopper_tests_skipped": 28,
+    "npu_tests_skipped": 2,
+    "actual_cuda_helper_tests_passed": 37,
+    "cuda_helper_scope": "ExpCast FMA boundary bytes; K centering and Q/K Hadamard vs independent matrix; 37/64/128 channels; FP32/FP16/BF16 noncontiguous inputs; current CUDA stream",
+    "cpu_scope": "dense invariance under Q/K preprocessing; original-width/custom softmax scaling; scaled V means; near-constant V overflow protection",
+    "linux_hopper_attention_runtime": "not run; previous user-supplied 0.1.0 H200 result does not cover this revision",
+    "details": "PAPER_ALIGNMENT.md"
+  },
+  "historical_sections_below": "0.1.0 validation; not evidence of 0.2.0 Hopper runtime correctness",
   "target": {
     "os": "Linux",
     "gpu": "NVIDIA Hopper (H800/H100/H200)",
