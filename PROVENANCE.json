@@ -1,0 +1,51 @@
+{
+  "date": "2026-09-17",
+  "mindie_sd": {
+    "url": "https://github.com/Ascend/MindIE-SD",
+    "ref": "dev",
+    "observed_commit": "09484e370b691e767d91ce2dcf50bc2373c1c30f",
+    "archive_sha256": "cbcd820e81bd1ab6d0e124ee9d922bc0deec71220759177a99e78bcd6cd28353"
+  },
+  "lightx2v": {
+    "url": "https://github.com/ModelTC/LightX2V",
+    "ref": "main",
+    "observed_commit": "6214d38a756db39a4706b7116178dbd96f16e2f3",
+    "archive_sha256": "9d41045c999230d4693cd0c33f2779ca6b4b0076f88a745d4e4aea22c0679d63",
+    "source_read_only": true
+  },
+  "paper": "https://arxiv.org/html/2609.15810v1",
+  "op_plugin_api": {
+    "url": "https://github.com/Ascend/op-plugin/blob/master/docs/zh/custom_APIs/torch_npu/torch_npu-npu_add_quant_matmul_.md",
+    "blob_sha": "e0c917fbc50059790bace68697cee9e159ac0fff"
+  },
+  "mindie_source_map": [
+    "mindiesd/layers/flash_attn/quant_flash_attn.py",
+    "mindiesd/layers/flash_attn/fused_infer_attention_score.py",
+    "mindiesd/layers/quant/block_quant.py",
+    "csrc/ops/fused_infer_attention_score/op_kernel/eagle_common/op_kernel/arch35/vf/vf_basic_block_fullquant_unaligned256_no_update.h",
+    "csrc/ops/fused_infer_attention_score/op_kernel/eagle_common/op_kernel/arch35/vf/vf_basic_block_fullquant_unaligned256_update.h",
+    "csrc/ops/fused_infer_attention_score/op_kernel/eagle_common/op_kernel/arch35/vf/vf_basic_block_fullquant_unaligned512_no_update.h",
+    "csrc/ops/fused_infer_attention_score/op_kernel/eagle_common/op_kernel/arch35/vf/vf_basic_block_fullquant_unaligned512_update.h",
+    "csrc/ops/fused_infer_attention_score/op_kernel/eagle_common/op_kernel/arch35/flash_attention_score_block_vec_base_fullquant.h"
+  ],
+  "lightx_source_map": [
+    "lightx2v/models/networks/minimax_h3/infer/transformer_infer.py",
+    "lightx2v/models/networks/minimax_h3/weights/transformer_weights.py",
+    "lightx2v/models/schedulers/minimax_h3/scheduler.py",
+    "lightx2v/common/ops/attn/ulysses_attn.py",
+    "lightx2v_platform/ops/attn/ascend_npu/npu_flash_attn.py"
+  ],
+  "target_runtime": {
+    "hardware": "user-confirmed A5 with working FP8 Attention",
+    "cann": "9.1.0 (user supplied)",
+    "remote_execution": false
+  },
+  "local_runtime": {
+    "python": "3.12.14",
+    "torch": "2.2.2",
+    "numpy": "1.26.4",
+    "pytest": "9.1.1",
+    "ruff": "0.16.8",
+    "venv": "/tmp/vc-attention-venv"
+  }
+}

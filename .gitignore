@@ -1,0 +1,12 @@
+__pycache__/
+.pytest_cache/
+captures/
+.venv*/
+build/
+dist/
+/vc-attention-*/
+*.egg-info/
+*.so
+*.pyd
+*.obj
+*.ptx

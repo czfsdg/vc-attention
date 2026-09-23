@@ -1,0 +1,148 @@
+{
+  "status": "exploratory",
+  "source": {
+    "kind": "synthetic_clustered",
+    "seed": 20260917
+  },
+  "device": "cpu",
+  "torch": "2.2.2",
+  "host": "macOS-14.7.6-x86_64-i386-64bit",
+  "preflight": null,
+  "shape_q": [
+    1,
+    2,
+    128,
+    128
+  ],
+  "shape_k": [
+    1,
+    2,
+    1024,
+    128
+  ],
+  "scale": 0.08838834764831845,
+  "query_range": [
+    0,
+    128
+  ],
+  "reference": "FP32 streaming on the same input values",
+  "full_kv_context": true,
+  "warmup": 1,
+  "repeats": 3,
+  "scope": "isolated attention; smoothing active; regrouping included on every measured call",
+  "warning": "Prototype wall times are NOT fused-kernel or H3 end-to-end speedups. MindIE uses a different V/P quantization contract.",
+  "arms": {
+    "fp8_control": {
+      "metrics": {
+        "rmse": 0.04318703438330924,
+        "relative_rmse": 0.0159053744571745,
+        "max_abs": 0.22305011749267578,
+        "cosine": 0.999877948292525
+      },
+      "wall_ms": [
+        5.960025824606419,
+        5.250053945928812,
+        5.9469700790941715
+      ],
+      "median_ms": 5.9469700790941715,
+      "config": {
+        "expcast": false,
+        "v_smooth": false,
+        "quantize": true,
+        "q_block": 128,
+        "k_quant_block": 256,
+        "kv_block": 128,
+        "clusters": 8,
+        "iterations": 2,
+        "active_fraction": 0.25,
+        "refresh_interval": 4,
+        "mean_dtype": "float16",
+        "backend": "reference"
+      }
+    },
+    "expcast": {
+      "metrics": {
+        "rmse": 0.043834921155004564,
+        "relative_rmse": 0.016143984999824924,
+        "max_abs": 0.22864151000976562,
+        "cosine": 0.9998758738379638
+      },
+      "wall_ms": [
+        6.395073141902685,
+        7.546568289399147,
+        6.598333828151226
+      ],
+      "median_ms": 6.598333828151226,
+      "config": {
+        "expcast": true,
+        "v_smooth": false,
+        "quantize": true,
+        "q_block": 128,
+        "k_quant_block": 256,
+        "kv_block": 128,
+        "clusters": 8,
+        "iterations": 2,
+        "active_fraction": 0.25,
+        "refresh_interval": 4,
+        "mean_dtype": "float16",
+        "backend": "reference"
+      }
+    },
+    "v_smooth": {
+      "metrics": {
+        "rmse": 0.02173677369280407,
+        "relative_rmse": 0.008005447236926401,
+        "max_abs": 0.12212276458740234,
+        "cosine": 0.9999679559877823
+      },
+      "wall_ms": [
+        9.577741846442223,
+        8.71756812557578,
+        8.424646686762571
+      ],
+      "median_ms": 8.71756812557578,
+      "config": {
+        "expcast": false,
+        "v_smooth": true,
+        "quantize": true,
+        "q_block": 128,
+        "k_quant_block": 256,
+        "kv_block": 128,
+        "clusters": 8,
+        "iterations": 2,
+        "active_fraction": 0.25,
+        "refresh_interval": 4,
+        "mean_dtype": "float16",
+        "backend": "reference"
+      }
+    },
+    "combined": {
+      "metrics": {
+        "rmse": 0.023190590009278145,
+        "relative_rmse": 0.008540873974040051,
+        "max_abs": 0.12091541290283203,
+        "cosine": 0.999963528413461
+      },
+      "wall_ms": [
+        9.871087968349457,
+        10.193697176873684,
+        9.08926222473383
+      ],
+      "median_ms": 9.871087968349457,
+      "config": {
+        "expcast": true,
+        "v_smooth": true,
+        "quantize": true,
+        "q_block": 128,
+        "k_quant_block": 256,
+        "kv_block": 128,
+        "clusters": 8,
+        "iterations": 2,
+        "active_fraction": 0.25,
+        "refresh_interval": 4,
+        "mean_dtype": "float16",
+        "backend": "reference"
+      }
+    }
+  }
+}
