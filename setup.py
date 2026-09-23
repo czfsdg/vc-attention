@@ -3,17 +3,8 @@ import os
 import sys
 
 from setuptools import setup
-from setuptools.command.build_py import build_py
-
-
-class BuildPython(build_py):
-    def find_package_modules(self, package, package_dir):
-        # The original reference package lives at the repository root.
-        return [module for module in super().find_package_modules(package, package_dir)
-                if module[1] != "setup"]
-
 extensions = []
-commands = {"build_py": BuildPython}
+commands = {}
 if os.environ.get("VC_ATTENTION_BUILD_CUDA", "1") != "0":
     import torch
     from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CUDA_HOME
@@ -43,7 +34,7 @@ setup(
     version="0.1.0",
     description="VC-Attention reference and CUDA C++ FP8 backend for Hopper",
     packages=["vc_attention"],
-    package_dir={"vc_attention": "."},
+    package_dir={"": "src"},
     ext_modules=extensions,
     cmdclass=commands,
     python_requires=">=3.9",

@@ -15,7 +15,7 @@ This adds `Config(backend="cuda_fp8")` to the existing VC-Attention API. It is
   Device queries use the CUDA runtime directly; cuBLASLt handles are cached per
   host thread/device. This avoids pulling in cuSPARSE/cuSOLVER headers through
   ATen's general CUDA context header, and avoids destroying handles per call.
-- `cuda_backend.py`: extension loading and the existing request/step layout cache.
+- `src/vc_attention/cuda_backend.py`: extension loading and the existing request/step layout cache.
   Python does not loop over the Attention tiles. K/V gathers remain PyTorch
   operations on CUDA. Clustering is GPU ATen orchestration, not a fused custom
   clustering kernel.
@@ -26,7 +26,7 @@ This adds `Config(backend="cuda_fp8")` to the existing VC-Attention API. It is
   Local syntax/build checks are not a substitute for the Hopper tests below.
 
 Local checks completed on 2026-09-23: the extension compiled for `sm_90` and
-loaded successfully with CUDA 12.1 / PyTorch 2.3.1 on Windows; 35 CPU/reference,
+loaded successfully with CUDA 12.1 / PyTorch 2.3.1 on Windows; 36 CPU/reference,
 argument-validation, and import tests passed. The 24 Hopper tests and 2 NPU tests were
 skipped because the local GPU is an RTX 3060. These results do not establish
 Linux build compatibility or H800 runtime correctness. See
@@ -37,6 +37,12 @@ CUDA 13 / PyTorch 2.13 / H200 environment still needs a remote rebuild and run.
 
 The backend is named `cuda_backend.py` so running Python from the checkout does
 not shadow NVIDIA's `cuda.bindings` package during PyTorch initialization.
+Python modules live under `src/vc_attention/`; the repository root is not a
+Python package. This lets pytest run from a checkout named `vc-attention` and
+test the installed package together with its compiled extension.
+This workflow was checked with pytest 9.1.1 against a newly built native wheel
+installed in a fresh virtual environment, including a regression test that
+executes pytest from a directory whose name contains a hyphen.
 
 ## Requirements
 
@@ -66,6 +72,9 @@ Building does not require an attached GPU: the architecture is explicit. The
 default build targets `9.0`, even if the build host has a different GPU.
 Never copy a Windows `.pyd` to Linux; compile from source on the remote host.
 When changing `.cpp` or `.cu`, rerun the install command to rebuild the extension.
+Rerun it after changing Python sources as well when using this normal install.
+For Python development, an editable CUDA installation is available with
+`python3 -m pip install -e . --no-build-isolation --no-deps`.
 
 No manual wheel step is required. To distribute the result to compatible hosts:
 
@@ -117,7 +126,8 @@ Supported v1 contract:
 
 With ExpCast disabled, denominator and V-mean recovery use the FP32 exponential
 row sum; PV uses rounded E4M3 probabilities. With ExpCast enabled, both use the
-decoded E4M3 values. This distinction is intentional and matches `core.py`.
+decoded E4M3 values. This distinction is intentional and matches
+`src/vc_attention/core.py`.
 
 ## Validate before benchmarking
 
@@ -162,3 +172,4 @@ WGMMA/TMA scheduling. That implementation is not part of this baseline.
 - [CUDA 12.1 cuBLASLt FP8 requirements](https://docs.nvidia.com/cuda/archive/12.1.0/cublas/index.html#cublasltmatmul)
 - [CUDA FP8 conversions](https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__FP8__MISC.html)
 - [NVIDIA GPU compute capabilities](https://developer.nvidia.com/cuda/gpus)
+- [pytest package and test layouts](https://docs.pytest.org/en/stable/explanation/goodpractices.html#choosing-a-test-layout)

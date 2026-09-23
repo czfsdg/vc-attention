@@ -5,16 +5,19 @@
 cuBLASLt FP8 矩阵乘；H800 上的正确性和性能仍需真机验证，尚不是完整融合内核。
 下文原有 A5 实验记录和两种后端的说明保留为历史背景；默认后端仍为 `reference`。
 
+当前 Python 包源码位于 `src/vc_attention/`，C++/CUDA 源码位于 `csrc/`。
+在本仓库运行测试前先按 CUDA 文档执行 `pip install .`；根目录不再是 Python 包。
+
 这是可运行的**算法与接线原型**。已完成 CPU 数值测试；A5 自检、真实 H3 张量回放、视频/音频生成、融合内核性能均尚未验证。请先抓真实 Q/K/V 回放，再决定融合开发是否值得继续。
 
 ## 实现范围
 
 | 文件 | 用途 |
 | --- | --- |
-| `core.py` | ExpCast、V 聚类重排、128-token 块去均值、在线均值恢复、步数调度 |
-| `npu.py` | A5 原生 FP8 矩阵乘实验后端和设备自检 |
-| `lightx2v.py` | LightX2V H3 注册表接入、受限张量抓取、生成入口 |
-| `replay.py` | 同输入四组对照，以及单独的 MindIE BF16/FP8 基线 |
+| `src/vc_attention/core.py` | ExpCast、V 聚类重排、128-token 块去均值、在线均值恢复、步数调度 |
+| `src/vc_attention/npu.py` | A5 原生 FP8 矩阵乘实验后端和设备自检 |
+| `src/vc_attention/lightx2v.py` | LightX2V H3 注册表接入、受限张量抓取、生成入口 |
+| `src/vc_attention/replay.py` | 同输入四组对照，以及单独的 MindIE BF16/FP8 基线 |
 | `tests/` | 独立 dense oracle、编码、状态、适配器契约、A5 检查 |
 | `results/` | 本机合成数据报告；不是 H3 实测结果 |
 
