@@ -72,7 +72,7 @@ def run(args):
 
         preflight_result = preflight(args.device)
     elif args.backend == "cuda_fp8":
-        from .cuda import preflight
+        from .cuda_backend import preflight
 
         preflight_result = preflight(args.device)
     else:

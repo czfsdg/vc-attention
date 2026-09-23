@@ -10,5 +10,5 @@ export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-9.0}"
 export MAX_JOBS="${MAX_JOBS:-4}"
 export VC_ATTENTION_BUILD_CUDA=1
 python3 -m pip install . --no-build-isolation --no-deps
-python3 -m vc_attention.cuda --device cuda:0
-VC_REQUIRE_CUDA=1 python3 -m pytest tests/test_core.py tests/test_adapter.py tests/test_cuda.py -q
+python3 -m vc_attention.cuda_backend --device cuda:0
+VC_REQUIRE_CUDA=1 python3 -m pytest tests/test_core.py tests/test_adapter.py tests/test_cuda.py tests/test_imports.py -q

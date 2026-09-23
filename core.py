@@ -145,7 +145,7 @@ class LayoutCache:
         if refresh:
             grouping = group_values
             if self.config.backend == "cuda_fp8":
-                from .cuda import group_values as grouping
+                from .cuda_backend import group_values as grouping
             pi, centers = grouping(
                 v,
                 clusters=self.config.clusters,
@@ -213,7 +213,7 @@ def attention(
     cfg = config or Config()
     _validate(q, k, v, causal, mask)
     if cfg.backend == "cuda_fp8":
-        from .cuda import _attention
+        from .cuda_backend import _attention
         return _attention(q, k, v, cfg, cache=cache, step=step, total_steps=total_steps,
                           request_id=request_id, layer_id=layer_id,
                           scale=q.shape[-1] ** -0.5 if scale is None else scale)

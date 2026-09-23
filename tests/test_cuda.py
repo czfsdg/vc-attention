@@ -39,14 +39,14 @@ def test_cuda_rejects_unsupported_geometry(kwargs):
 @hopper
 @pytest.mark.hopper
 def test_preflight():
-    from vc_attention.cuda import preflight
+    from vc_attention.cuda_backend import preflight
     assert preflight()["preflight"] == "passed"
 
 
 @hopper
 @pytest.mark.hopper
 def test_expcast_bytes_and_rounding_boundaries():
-    from vc_attention.cuda import _extension
+    from vc_attention.cuda_backend import _extension
     # Include values next to half-integer code boundaries, not just random data.
     thresholds = (torch.arange(120, dtype=torch.float32) + 0.5 - 119.65) / (8 * math.log2(math.e))
     values = torch.cat([
@@ -153,7 +153,7 @@ def test_running_max_mean_recovery_and_tail(cast):
 @hopper
 @pytest.mark.hopper
 def test_clustering_permutation_and_cache_refresh():
-    from vc_attention.cuda import group_values as native_group
+    from vc_attention.cuda_backend import group_values as native_group
     q, k, v = [x.cuda() for x in _inputs((1, 2, 19, 259, 16, 16), torch.float32)]
     permutation, centers = native_group(v, clusters=3, iterations=2)
     assert centers.shape == (1, 2, 3, 16)

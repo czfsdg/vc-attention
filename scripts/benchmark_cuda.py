@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from vc_attention import Config, attention
-from vc_attention.cuda import preflight
+from vc_attention.cuda_backend import preflight
 
 
 def measure(fn, warmup, repeats):

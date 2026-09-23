@@ -1,4 +1,4 @@
-"""Hopper CUDA C++ entry point; requires an explicitly built native extension."""
+"""Hopper entry point; named to avoid shadowing NVIDIA's cuda namespace."""
 import importlib
 import math
 
@@ -11,7 +11,7 @@ def _extension():
     except ImportError as exc:
         raise RuntimeError(
             "CUDA extension is missing or failed to load. On the H800 host run "
-            "TORCH_CUDA_ARCH_LIST=9.0 python -m pip install . --no-build-isolation. "
+            "TORCH_CUDA_ARCH_LIST=9.0 python3 -m pip install . --no-build-isolation. "
             "No reference fallback was used. Original error: " + str(exc)
         ) from exc
 

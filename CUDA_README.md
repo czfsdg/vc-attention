@@ -12,7 +12,7 @@ This adds `Config(backend="cuda_fp8")` to the existing VC-Attention API. It is
 - `csrc/kernels.cu` also contains the C++ host tile loops.
 - `csrc/bindings.cpp`: PyTorch allocation/stream integration and a C++/ATen
   implementation of the Lloyd clustering preprocessing.
-- `cuda.py`: extension loading and the existing request/step layout cache.
+- `cuda_backend.py`: extension loading and the existing request/step layout cache.
   Python does not loop over the Attention tiles. K/V gathers remain PyTorch
   operations on CUDA. Clustering is GPU ATen orchestration, not a fused custom
   clustering kernel.
@@ -23,11 +23,14 @@ This adds `Config(backend="cuda_fp8")` to the existing VC-Attention API. It is
   Local syntax/build checks are not a substitute for the Hopper tests below.
 
 Local checks completed on 2026-09-23: the extension compiled for `sm_90` and
-loaded successfully with CUDA 12.1 / PyTorch 2.3.1 on Windows; 34 CPU/reference
-and argument-validation tests passed. The 24 Hopper tests and 2 NPU tests were
+loaded successfully with CUDA 12.1 / PyTorch 2.3.1 on Windows; 35 CPU/reference,
+argument-validation, and import tests passed. The 24 Hopper tests and 2 NPU tests were
 skipped because the local GPU is an RTX 3060. These results do not establish
 Linux build compatibility or H800 runtime correctness. See
 `results/cuda_local_validation.json` for the recorded scope.
+
+The backend is named `cuda_backend.py` so running Python from the checkout does
+not shadow NVIDIA's `cuda.bindings` package during PyTorch initialization.
 
 ## Requirements
 
@@ -43,13 +46,13 @@ Linux build compatibility or H800 runtime correctness. See
 Run inside the Python environment containing your intended PyTorch build:
 
 ```bash
-python -c "import torch; print(torch.__version__, torch.version.cuda); print(torch.cuda.get_device_name())"
+python3 -c "import torch; print(torch.__version__, torch.version.cuda); print(torch.cuda.get_device_name())"
 nvcc --version
-python -m pip install 'setuptools>=64' wheel ninja pytest numpy
+python3 -m pip install 'setuptools>=64' wheel ninja pytest numpy
 
 export TORCH_CUDA_ARCH_LIST=9.0
 export MAX_JOBS=4
-python -m pip install . --no-build-isolation --no-deps
+python3 -m pip install . --no-build-isolation --no-deps
 ```
 
 `CUDA_HOME` may be set to the Toolkit directory if `nvcc` is not discovered.
@@ -61,13 +64,13 @@ When changing `.cpp` or `.cu`, rerun the install command to rebuild the extensio
 No manual wheel step is required. To distribute the result to compatible hosts:
 
 ```bash
-python -m pip wheel . --no-build-isolation --no-deps -w dist
+python3 -m pip wheel . --no-build-isolation --no-deps -w dist
 ```
 
 For CPU/reference-only installation explicitly opt out of building the extension:
 
 ```bash
-VC_ATTENTION_BUILD_CUDA=0 python -m pip install . --no-build-isolation --no-deps
+VC_ATTENTION_BUILD_CUDA=0 python3 -m pip install . --no-build-isolation --no-deps
 ```
 
 This opt-out never changes the behavior of `backend="cuda_fp8"`: choosing it
@@ -113,8 +116,8 @@ decoded E4M3 values. This distinction is intentional and matches `core.py`.
 ## Validate before benchmarking
 
 ```bash
-python -m vc_attention.cuda --device cuda:0
-VC_REQUIRE_CUDA=1 python -m pytest tests/test_core.py tests/test_adapter.py tests/test_cuda.py -q
+python3 -m vc_attention.cuda_backend --device cuda:0
+VC_REQUIRE_CUDA=1 python3 -m pytest tests/test_core.py tests/test_adapter.py tests/test_cuda.py tests/test_imports.py -q
 ```
 
 Or, after installing build/test dependencies, run `bash scripts/validate_h800.sh`
@@ -129,9 +132,9 @@ from reduction order and FP8 boundary crossings; aggregate and maximum errors
 are checked rather than relying only on cosine similarity.
 
 ```bash
-python scripts/benchmark_cuda.py --queries 128 --tokens 1024 --heads 2 --dim 128
+python3 scripts/benchmark_cuda.py --queries 128 --tokens 1024 --heads 2 --dim 128
 # Existing four-arm replay works with real captured tensors as well:
-python -m vc_attention.replay --device cuda:0 --backend cuda_fp8 --tokens 1024 --heads 2 --dim 128 --output results/h800_replay.json
+python3 -m vc_attention.replay --device cuda:0 --backend cuda_fp8 --tokens 1024 --heads 2 --dim 128 --output results/h800_replay.json
 ```
 
 The benchmark measures the complete API call, including validation,
