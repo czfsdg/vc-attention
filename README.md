@@ -2,7 +2,9 @@
 
 新增 H800 CUDA C++ 后端：`Config(backend="cuda_fp8")`。源码、`pip install .`
 构建方式和远端验证步骤见 [CUDA_README.md](CUDA_README.md)。QK/PV 使用真实
-cuBLASLt FP8 矩阵乘；H800 上的正确性和性能仍需真机验证，尚不是完整融合内核。
+cuBLASLt FP8 矩阵乘；用户提供的 H200 日志已通过原生自检和 60 项测试，
+尚不是完整融合内核，性能有待实测。与 FlashAttention 2/3/4、SageAttention
+的对比命令见 [BENCHMARK.md](BENCHMARK.md)。
 下文原有 A5 实验记录和两种后端的说明保留为历史背景；默认后端仍为 `reference`。
 
 当前 Python 包源码位于 `src/vc_attention/`，C++/CUDA 源码位于 `csrc/`。

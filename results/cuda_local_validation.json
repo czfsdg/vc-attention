@@ -22,7 +22,11 @@
     "torch": "2.13.0+cu130",
     "cuda_toolkit": "13.0.88",
     "status_before_fix": "compilation failed: cusparse.h missing via ATen/cuda/CUDAContext.h",
-    "status_after_fix": "latest user log reached pytest but all 59 tests errored during root __init__.py setup; src-layout fix awaits remote rerun"
+    "status_after_fix": "user-provided H200 log: wheel installed; native FP8 preflight passed; 60 tests passed in 8.00s",
+    "cublaslt_version": 130101,
+    "tests_passed": 60,
+    "test_duration_seconds": 8.0,
+    "performance": "not measured"
   },
   "checks": {
     "nvcc_sm90_ptx_compilation": "passed",
@@ -33,7 +37,9 @@
     "validation_script_overrides_container_architectures": "passed with stubbed python3/nvcc commands and inherited multi-architecture list",
     "reference_editable_install": "passed",
     "python_syntax": "passed",
-    "tests_passed": 36,
+    "tests_passed": 52,
+    "benchmark_adapter_reference_and_timing_tests_passed": 16,
+    "third_party_attention_kernels": "not run locally; requires the user's installed libraries and target GPU",
     "native_wheel_install_in_fresh_environment": "passed; package and compiled extension loaded from the new environment's site-packages",
     "pytest_from_hyphenated_checkout": "passed with pytest 9.1.1; reproduced original setup ImportError before moving package under src/vc_attention",
     "torch_cuda_namespace_import_regression": "passed; reproduced circular import before renaming cuda.py",

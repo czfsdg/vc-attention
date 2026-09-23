@@ -22,18 +22,23 @@ This adds `Config(backend="cuda_fp8")` to the existing VC-Attention API. It is
 - This is a **multi-kernel correctness baseline**, not a fully fused FlashAttention
   kernel. Tiles and states pass through device memory between calls. No
   performance parity or speedup relative to FlashAttention/SDPA is claimed.
-- **H800 runtime correctness and speed must be verified on the remote machine.**
-  Local syntax/build checks are not a substitute for the Hopper tests below.
+- The user's H200 run passed native FP8 preflight and all 60 selected tests.
+  Performance still needs measurement with the benchmark below.
 
 Local checks completed on 2026-09-23: the extension compiled for `sm_90` and
-loaded successfully with CUDA 12.1 / PyTorch 2.3.1 on Windows; 36 CPU/reference,
-argument-validation, and import tests passed. The 24 Hopper tests and 2 NPU tests were
+loaded successfully with CUDA 12.1 / PyTorch 2.3.1 on Windows; 52 CPU/reference,
+argument-validation, import and benchmark-logic tests passed. The 24 Hopper tests and 2 NPU tests were
 skipped because the local GPU is an RTX 3060. These results do not establish
 Linux build compatibility or H800 runtime correctness. See
 `results/cuda_local_validation.json` for the recorded scope.
 The extension also rebuilt with cuSPARSE/cuSOLVER headers deliberately blocked;
-separate compiler probes confirmed the header guards were active. The user's
-CUDA 13 / PyTorch 2.13 / H200 environment still needs a remote rebuild and run.
+separate compiler probes confirmed the header guards were active.
+
+The user subsequently supplied a successful Linux H200 log: Python 3.12,
+PyTorch 2.13.0+cu130, nvcc 13.0.88, cuBLASLt 130101, native FP8 preflight passed,
+and **60 tests passed in 8.00 s**. This establishes that test suite's correctness
+coverage on that environment, not measured speed or model quality. The log was
+provided by the user; it was not executed through this local workspace.
 
 The backend is named `cuda_backend.py` so running Python from the checkout does
 not shadow NVIDIA's `cuda.bindings` package during PyTorch initialization.
@@ -133,7 +138,7 @@ decoded E4M3 values. This distinction is intentional and matches
 
 ```bash
 python3 -m vc_attention.cuda_backend --device cuda:0
-VC_REQUIRE_CUDA=1 python3 -m pytest tests/test_core.py tests/test_adapter.py tests/test_cuda.py tests/test_imports.py -q
+VC_REQUIRE_CUDA=1 python3 -m pytest tests/test_core.py tests/test_adapter.py tests/test_cuda.py tests/test_imports.py tests/test_benchmark.py -q
 ```
 
 Or, after installing build/test dependencies, run `bash scripts/validate_h800.sh`
@@ -150,14 +155,18 @@ from reduction order and FP8 boundary crossings; aggregate and maximum errors
 are checked rather than relying only on cosine similarity.
 
 ```bash
-python3 scripts/benchmark_cuda.py --queries 128 --tokens 1024 --heads 2 --dim 128
+python3 scripts/benchmark_cuda.py --queries 1024 --tokens 1024 --heads 2 --dim 128 --dtype bfloat16 --output results/h200_attention_compare.json
 # Existing four-arm replay works with real captured tensors as well:
 python3 -m vc_attention.replay --device cuda:0 --backend cuda_fp8 --tokens 1024 --heads 2 --dim 128 --output results/h800_replay.json
 ```
 
-The benchmark measures the complete API call, including validation,
-quantization, allocation, and first-step clustering. SDPA uses a different
-numerical contract. Report measured speed and error together.
+The benchmark directly compares installed **FlashAttention 2, 3, 4,
+SageAttention, and VC-Attention**, reporting versions, latency, speedup and FP32
+reference error. It measures the complete API call, including internal
+validation, quantization, allocation, and first-step clustering. Input layout
+copies and first-use JIT are outside timing. Different internal numerical
+contracts require reporting speed and error together. See [BENCHMARK.md](BENCHMARK.md)
+for commands, timing/accuracy scope, subsets and VC ablations.
 
 ## Next performance work
 
